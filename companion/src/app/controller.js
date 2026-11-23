@@ -11,8 +11,8 @@ import {
   uninstall as uninstallAddon,
 } from '../install.js';
 import { knowledgeReadme, sampleContext } from '../assets.js';
-import { buildMessages, buildSystem, cleanAnswer, loadKnowledge, plainAnswer } from '../prompt.js';
-import { ask, canSearch } from '../providers.js';
+import { buildMessages, buildSystemParts, cleanAnswer, loadKnowledge, plainAnswer } from '../prompt.js';
+import { ask, canFetchData, canSearch } from '../providers.js';
 import { startWatcher } from '../watcher.js';
 import { authStatus, findClaudeCode, openInstall, openLogin } from '../claude-code.js';
 import {
@@ -390,8 +390,8 @@ export function createController({ log = () => {}, onUpdateAvailable = () => {},
     async testAI() {
       const req = { id: 'test', question: t('testQuestion'), context: sampleContext(), history: [] };
       const started = Date.now();
-      const system = buildSystem(loadKnowledge(), 'fizzi', { canSearch: canSearch(cfg), client: req.context?.client, ...(guide ? { guide } : {}) });
-      const { text, model } = await ask(cfg, system, buildMessages(req), req);
+      const system = buildSystemParts(loadKnowledge(), 'fizzi', { canSearch: canSearch(cfg), dataTool: canFetchData(cfg), client: req.context?.client, ...(guide ? { guide } : {}) });
+      const { text, model } = await ask(cfg, system, buildMessages(req, { select: cfg.contextSelect !== false }), req);
       return { text: plainAnswer(cleanAnswer(text)), model, seconds: ((Date.now() - started) / 1000).toFixed(1) };
     },
 

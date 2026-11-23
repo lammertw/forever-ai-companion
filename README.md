@@ -202,6 +202,8 @@ Everything is available in **English and Spanish**, chosen automatically:
 
 To force the app's language, set `"language": "en"` or `"es"` in `%APPDATA%\ForeverAICompanion\config.json` (`"auto"` by default).
 
+To save tokens, each question only sends the big character sections it needs (bank, spells, recipes, flight paths, auction prices...). With Claude (API) the AI can fetch the rest on demand through a `get_character_data` tool; with the other AIs it asks you to mention it. Set `"contextSelect": false` in `config.json` to always send everything.
+
 ---
 
 ## How it works
@@ -418,6 +420,7 @@ companion/
   src/inbox.js              Inboxes and bell
   src/beacon.js             Tells the game whether the app is open and ready
   src/updater.js            Updates the app from GitHub releases
+  src/context-select.js     Picks the character sections each question needs (and the on-demand data tool)
   src/secrets.js            Encrypts API keys in config.json (Windows DPAPI, macOS Keychain)
   src/prompt.js             Instructions for the AI
   src/guide.js              WoW Forever guide: date, version, downloads and picking topic sections

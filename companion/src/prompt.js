@@ -4,6 +4,7 @@ import { env } from './config.js';
 import { foreverGuide } from './assets.js';
 import { TOPICS_FILE, freshnessSection, parseGuide, selectTopics } from './guide.js';
 import { normalizeLang } from './i18n.js';
+import { selectContext } from './context-select.js';
 
 // The player's personal assistant, chosen in the addon (Alliance: Fizzi, the
 // gnome; Horde: Rizzik, the goblin). Personality lives here; the rest of the
@@ -77,7 +78,11 @@ Every question comes with a JSON of the character's state, read from the game at
 - recentErrors: the game's red error messages in the last minutes ("Your pet is dead", "Out of range"...), with "minutesAgo"; the question may be about them. recentDeaths: the player's deaths in the last two hours (where, their level, and the enemy they had targeted).
 - group: group.
 - client, localTime, serverTime: game version, client language and times.
-If a section is missing, the game did not provide it or the player has none: say so instead of guessing.`;
+- omittedSections: sections the game provided but that were left out of this message because the question does not seem to need them.
+If a section is missing, the game did not provide it or the player has none: say so instead of guessing. A section listed in "omittedSections" is NOT missing: it exists but was not sent.`;
+
+const FETCH_DATA = `If you need an omitted section, call the get_character_data tool with its name (several at once) before answering. Never say a section is missing without checking it.`;
+const NO_FETCH_DATA = `If you need an omitted section to answer well, say you do not have that information handy and that the player can ask again mentioning it (e.g. "what is in my bank?").`;
 
 const METHOD = `## How to answer
 1. Understand what the player wants and check their data first: level, class, quests, gear, bags, money, location, group. Answer for THEIR situation, never generically.
@@ -144,24 +149,35 @@ export function loadKnowledge(dir = path.join(env.dataDir, 'knowledge')) {
 // guide: the newest Forever guide (guide.currentGuide); client: the game's
 // version and locale from the request (context.client); lang: the player's
 // language ("en" | "es", from the addon); now: today (tests).
-export function buildSystem(knowledge, persona, {
-  canSearch = false, guide = builtinGuide, topics = builtinTopics, question = '', context = null, client = null, lang = null, now,
+export function buildSystemParts(knowledge, persona, {
+  canSearch = false, dataTool = false, guide = builtinGuide, topics = builtinTopics, question = '', context = null, client = null, lang = null, now,
 } = {}) {
   const l = playerLang({ lang, client });
-  const parts = [personaIntro(persona, l), GAME, LANGUAGE[l], DATA, METHOD, canSearch ? SEARCH_ON : SEARCH_OFF, FORMAT];
-  parts.push(freshnessSection(guide, { client, now }));
-  if (guide) parts.push(guideSection(guide.body));
+  // `stable` is identical between questions of one player (cacheable);
+  // `dynamic` changes with the date and the question.
+  const stable = [personaIntro(persona, l), GAME, LANGUAGE[l], `${DATA}\n${dataTool ? FETCH_DATA : NO_FETCH_DATA}`, METHOD, canSearch ? SEARCH_ON : SEARCH_OFF, FORMAT];
+  if (guide) stable.push(guideSection(guide.body));
+  if (knowledge) stable.push(`## Server knowledge\n\n${knowledge}`);
+  const dynamic = [freshnessSection(guide, { client, now })];
   // Detailed topics: only the sections about this question.
   const picked = topics ? selectTopics(topics, { question, context }) : '';
   if (picked) {
-    parts.push(guideSection(picked, `WoW Forever details for this question (reviewed ${topics.meta.date}; reference data like the base guide)`));
+    dynamic.push(guideSection(picked, `WoW Forever details for this question (reviewed ${topics.meta.date}; reference data like the base guide)`));
   }
-  if (knowledge) parts.push(`## Server knowledge\n\n${knowledge}`);
-  return parts.join('\n\n');
+  return { stable: stable.join('\n\n'), dynamic: dynamic.join('\n\n') };
 }
 
+export function buildSystem(knowledge, persona, opts) {
+  const { stable, dynamic } = buildSystemParts(knowledge, persona, opts);
+  return `${stable}\n\n${dynamic}`;
+}
+
+// A system prompt is a string or { stable, dynamic } (see buildSystemParts).
+export const systemText = (system) => (typeof system === 'string' ? system : `${system.stable}\n\n${system.dynamic}`);
+
 // Chat turns: earlier Q&A (sent by the addon) + the current question with context.
-export function buildMessages(req) {
+// select: send only the sections the question needs (context-select.js).
+export function buildMessages(req, { select = true } = {}) {
   const messages = [];
   for (const turn of req.history || []) {
     if (turn && turn.q && turn.a) {
@@ -171,7 +187,7 @@ export function buildMessages(req) {
   }
   messages.push({
     role: 'user',
-    content: `Current state of my character (JSON):\n${JSON.stringify(req.context ?? {})}\n\nQuestion: ${req.question}`,
+    content: `Current state of my character (JSON):\n${JSON.stringify((select ? selectContext(req.context, req.question).context : req.context) ?? {})}\n\nQuestion: ${req.question}`,
   });
   return messages;
 }

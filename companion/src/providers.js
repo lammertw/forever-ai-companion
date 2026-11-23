@@ -3,7 +3,8 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { flattenPrompt } from './prompt.js';
+import { flattenPrompt, systemText } from './prompt.js';
+import { SECTIONS, pickSections } from './context-select.js';
 import { findClaudeCode, spawnArgs } from './claude-code.js';
 import { err, t } from './i18n.js';
 import {
@@ -46,6 +47,21 @@ export function canSearch(cfg) {
   return cfg.webSearch !== false && ['claude-code', 'anthropic', 'codex'].includes(cfg.provider);
 }
 
+// Providers that can fetch omitted character sections on demand (see context-select.js).
+export function canFetchData(cfg) {
+  return cfg.provider === 'anthropic' && cfg.contextSelect !== false;
+}
+
+const DATA_TOOL = {
+  name: 'get_character_data',
+  description: 'Returns sections of the character data that were left out of the message (listed in "omittedSections"), as JSON.',
+  input_schema: {
+    type: 'object',
+    properties: { sections: { type: 'array', items: { type: 'string', enum: SECTIONS }, description: 'Section names, e.g. ["bank", "spells"].' } },
+    required: ['sections'],
+  },
+};
+
 // Server-side web tools for the Claude API. The newest variants (dynamic
 // filtering) need Opus/Sonnet 4.6 or later; Haiku uses the basic web search.
 export function anthropicWebTools(model) {
@@ -56,19 +72,22 @@ export function anthropicWebTools(model) {
   ];
 }
 
-async function anthropic(cfg, system, messages) {
+async function anthropic(cfg, system, messages, req) {
   const { default: Anthropic } = await import('@anthropic-ai/sdk');
   const c = cfg.anthropic;
   const client = new Anthropic(c.apiKey ? { apiKey: c.apiKey } : {});
   const params = {
     model: c.model,
     max_tokens: c.maxTokens,
-    // Stable prefix (rules + server knowledge) first so it can be cached.
-    system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
+    // The part that does not change between questions is cached; what follows it (date, topics for this question) is not.
+    system: typeof system === 'string'
+      ? [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }]
+      : [{ type: 'text', text: system.stable, cache_control: { type: 'ephemeral' } }, { type: 'text', text: system.dynamic }],
     messages,
     output_config: { effort: c.effort },
   };
-  if (canSearch(cfg)) params.tools = anthropicWebTools(c.model);
+  params.tools = [...(canSearch(cfg) ? anthropicWebTools(c.model) : []), ...(canFetchData(cfg) && req?.context ? [DATA_TOOL] : [])];
+  if (!params.tools.length) delete params.tools;
   const send = (p) => (c.fallbacks && FALLBACK_MODELS.has(c.model)
     ? client.beta.messages.create({ ...p, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' }, { timeout: cfg.timeoutMs })
     : client.messages.create(p, { timeout: cfg.timeoutMs }));
@@ -83,9 +102,19 @@ async function anthropic(cfg, system, messages) {
   try {
     response = await send(params);
     count(response);
-    // A long web search can pause the turn: send it back and the server resumes.
-    for (let i = 0; i < 3 && response.stop_reason === 'pause_turn'; i++) {
-      response = await send({ ...params, messages: [...messages, { role: 'assistant', content: response.content }] });
+    // A long web search can pause the turn (send it back and the server
+    // resumes); get_character_data runs here, from the full character data.
+    const convo = [...messages];
+    for (let i = 0; i < 4 && ['pause_turn', 'tool_use'].includes(response.stop_reason); i++) {
+      convo.push({ role: 'assistant', content: response.content });
+      if (response.stop_reason === 'tool_use') {
+        const results = response.content.filter((b) => b.type === 'tool_use' && b.name === DATA_TOOL.name).map((b) => ({
+          type: 'tool_result', tool_use_id: b.id, content: JSON.stringify(pickSections(req?.context, b.input?.sections)),
+        }));
+        if (!results.length) break;
+        convo.push({ role: 'user', content: results });
+      }
+      response = await send({ ...params, messages: convo });
       count(response);
     }
   } catch (error) {
@@ -368,5 +397,5 @@ const PROVIDERS = { anthropic, openai: openaiCompatible, 'claude-code': claudeCo
 export async function ask(cfg, system, messages, req) {
   const fn = PROVIDERS[cfg.provider];
   if (!fn) throw new Error(`Unknown provider "${cfg.provider}". Use: ${Object.keys(PROVIDERS).join(', ')}`);
-  return fn(cfg, system, messages, req);
+  return fn(cfg, cfg.provider === 'anthropic' ? system : systemText(system), messages, req);
 }

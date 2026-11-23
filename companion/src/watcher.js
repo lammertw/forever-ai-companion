@@ -10,9 +10,9 @@ import { wowPaths } from './config.js';
 import { decodeImage } from './image.js';
 import { GridUnreadableError, decodeGrid } from './grid.js';
 import { publishInbox, resetSignals, ringSignal } from './inbox.js';
-import { buildMessages, buildSystem, cleanAnswer, loadKnowledge, plainAnswer, playerLang } from './prompt.js';
+import { buildMessages, buildSystemParts, cleanAnswer, loadKnowledge, plainAnswer, playerLang } from './prompt.js';
 import { guideFreshness } from './guide.js';
-import { ask, canSearch } from './providers.js';
+import { ask, canFetchData, canSearch } from './providers.js';
 import { loadState, saveState } from './state.js';
 import { loadContextCache, resolveContext, saveContextCache } from './context-cache.js';
 import { startScreenReader } from './screen-reader.js';
@@ -85,7 +85,7 @@ export async function handleRequest(req, {
       })
       : req.probe && probeMonitor
       ? { ...(await probeReport(req.probe, probeMonitor)), model: 'prueba de canales' }
-      : await runInLang(playerLang({ lang: req.lang, client: req.context?.client }), () => ask(cfg, typeof system === 'function' ? system(req) : system, buildMessages(req), req));
+      : await runInLang(playerLang({ lang: req.lang, client: req.context?.client }), () => ask(cfg, typeof system === 'function' ? system(req) : system, buildMessages(req, { select: cfg.contextSelect !== false }), req));
     answer = { id: req.id, ok: true, answer: cleanAnswer(text) || t('emptyAnswer'), model };
     // Tokens the answer used, shown in the game under the answer.
     if (usage) answer.tokens = { i: usage.input, c: usage.cached, o: usage.output };
@@ -122,8 +122,8 @@ export function startWatcher({ cfg, wowDir, log = () => {}, onEvent = () => {}, 
     // (this answer already tells the AI to double-check).
     if (guide && guideFreshness(guide, { client }).gameNewer) guides.onPatch();
     const topics = guides?.topics?.();
-    return buildSystem(knowledge, req.assistant, {
-      canSearch: canSearch(cfg), client, lang: req.lang,
+    return buildSystemParts(knowledge, req.assistant, {
+      canSearch: canSearch(cfg), dataTool: canFetchData(cfg), client, lang: req.lang,
       question: req.question, context: req.context, ...(guide ? { guide } : {}), ...(topics ? { topics } : {}),
     });
   };
